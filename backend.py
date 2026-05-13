@@ -1,13 +1,16 @@
 import pandas as pd
 import numpy as np
+
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from sklearn.metrics import silhouette_score
-from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.ensemble import IsolationForest
+
 from mlxtend.frequent_patterns import apriori
 from mlxtend.frequent_patterns import association_rules
-from sklearn.ensemble import IsolationForest
-#----------------------------------------------------------------
+
+
 REQUIRED_COLUMNS = [
     "CustomerID",
     "InvoiceNo",
@@ -21,7 +24,8 @@ REQUIRED_COLUMNS = [
 def load_data(file_source):
     df = pd.read_csv(file_source)
     return df
-#----------------------------------------------------------------
+
+
 def preprocess_data(df):
     data = df.copy()
 
@@ -29,14 +33,7 @@ def preprocess_data(df):
     if missing_columns:
         raise ValueError(f"Missing required columns: {missing_columns}")
 
-    data = data.dropna(subset=[
-        "CustomerID",
-        "InvoiceNo",
-        "Description",
-        "Quantity",
-        "UnitPrice",
-        "InvoiceDate"
-    ])
+    data = data.dropna(subset=REQUIRED_COLUMNS)
 
     data["CustomerID"] = data["CustomerID"].astype(str)
     data["InvoiceNo"] = data["InvoiceNo"].astype(str)
@@ -53,18 +50,19 @@ def preprocess_data(df):
 
     data["TotalPrice"] = data["Quantity"] * data["UnitPrice"]
 
+    if data.empty:
+        raise ValueError("No valid data remains after preprocessing.")
+
     return data
-#----------------------------------------------------------------
+
+
 def create_customer_features(data):
-
     customer_df = data.groupby("CustomerID").agg({
-
         "TotalPrice": "sum",
         "Quantity": "sum",
         "InvoiceNo": "nunique",
         "Description": "nunique",
         "InvoiceDate": "max"
-
     }).reset_index()
 
     customer_df.columns = [
@@ -83,16 +81,15 @@ def create_customer_features(data):
     ).dt.days
 
     customer_df["AvgTransactionValue"] = (
-        customer_df["TotalSpent"] /
-        customer_df["NumTransactions"]
+        customer_df["TotalSpent"] / customer_df["NumTransactions"]
     )
 
     customer_df = customer_df.drop(columns=["LastPurchaseDate"])
 
     return customer_df
-#----------------------------------------------------------------
-def scale_features(customer_df):
 
+
+def scale_features(customer_df):
     feature_columns = [
         "TotalSpent",
         "TotalQuantity",
@@ -105,41 +102,34 @@ def scale_features(customer_df):
     X = customer_df[feature_columns]
 
     scaler = StandardScaler()
-
     X_scaled = scaler.fit_transform(X)
 
     return X_scaled, feature_columns
-#----------------------------------------------------------------
-def calculate_sse(X_scaled, max_k=10):
 
-    sse = []
+
+def calculate_bic_scores(X_scaled, max_k=10):
+    bic_scores = []
 
     for k in range(1, max_k + 1):
-
-        model = KMeans(
-            n_clusters=k,
-            random_state=42,
-            n_init=10
+        model = GaussianMixture(
+            n_components=k,
+            random_state=42
         )
 
         model.fit(X_scaled)
+        bic_scores.append(model.bic(X_scaled))
 
-        sse.append(model.inertia_)
-
-    return sse
+    return bic_scores
 
 
 def choose_best_k(X_scaled, max_k=10):
-
     best_k = 2
     best_score = -1
 
     for k in range(2, max_k + 1):
-
-        model = KMeans(
-            n_clusters=k,
-            random_state=42,
-            n_init=10
+        model = GaussianMixture(
+            n_components=k,
+            random_state=42
         )
 
         labels = model.fit_predict(X_scaled)
@@ -152,26 +142,48 @@ def choose_best_k(X_scaled, max_k=10):
 
     return best_k, best_score
 
-#----------------------------------------------------------------
-def run_kmeans(customer_df, X_scaled, fixed_k=None):
+
+def run_gmm(customer_df, X_scaled, fixed_k=None):
+    if len(customer_df) < 3:
+        clustered_customers = customer_df.copy()
+        clustered_customers["cluster"] = 0
+        clustered_customers["ClusterProbability"] = 1.0
+
+        cluster_summary = clustered_customers.groupby("cluster").agg({
+            "CustomerID": "count",
+            "TotalSpent": "mean",
+            "TotalQuantity": "mean",
+            "NumTransactions": "mean",
+            "UniqueProducts": "mean",
+            "RecencyDays": "mean",
+            "AvgTransactionValue": "mean",
+            "ClusterProbability": "mean"
+        }).reset_index()
+
+        cluster_summary = cluster_summary.rename(columns={
+            "CustomerID": "NumberOfCustomers"
+        })
+
+        return clustered_customers, cluster_summary, 1, None
 
     if fixed_k is not None and fixed_k >= 2:
-        best_k = fixed_k
+        best_k = min(int(fixed_k), len(customer_df) - 1)
         silhouette = None
     else:
         max_k = min(10, len(customer_df) - 1)
         best_k, silhouette = choose_best_k(X_scaled, max_k=max_k)
 
-    model = KMeans(
-        n_clusters=best_k,
-        random_state=42,
-        n_init=10
+    model = GaussianMixture(
+        n_components=best_k,
+        random_state=42
     )
 
     cluster_labels = model.fit_predict(X_scaled)
+    cluster_probabilities = model.predict_proba(X_scaled).max(axis=1)
 
     clustered_customers = customer_df.copy()
     clustered_customers["cluster"] = cluster_labels
+    clustered_customers["ClusterProbability"] = cluster_probabilities
 
     cluster_summary = clustered_customers.groupby("cluster").agg({
         "CustomerID": "count",
@@ -180,7 +192,8 @@ def run_kmeans(customer_df, X_scaled, fixed_k=None):
         "NumTransactions": "mean",
         "UniqueProducts": "mean",
         "RecencyDays": "mean",
-        "AvgTransactionValue": "mean"
+        "AvgTransactionValue": "mean",
+        "ClusterProbability": "mean"
     }).reset_index()
 
     cluster_summary = cluster_summary.rename(columns={
@@ -188,28 +201,51 @@ def run_kmeans(customer_df, X_scaled, fixed_k=None):
     })
 
     return clustered_customers, cluster_summary, best_k, silhouette
-#----------------------------------------------------------------
-def run_pca(clustered_customers, X_scaled):
 
-    pca = PCA(n_components=2)
 
-    pca_result = pca.fit_transform(X_scaled)
+def run_tsne(clustered_customers, X_scaled):
+    n_samples = len(clustered_customers)
 
-    pca_df = pd.DataFrame(
-        pca_result,
-        columns=["PC1", "PC2"]
+    if n_samples < 3:
+        tsne_df = pd.DataFrame({
+            "TSNE1": [0] * n_samples,
+            "TSNE2": [0] * n_samples,
+            "CustomerID": clustered_customers["CustomerID"].values,
+            "cluster": clustered_customers["cluster"].values
+        })
+
+        return tsne_df
+
+    perplexity_value = min(30, max(2, (n_samples - 1) // 3))
+
+    tsne = TSNE(
+        n_components=2,
+        perplexity=perplexity_value,
+        random_state=42,
+        init="pca",
+        learning_rate="auto"
     )
 
-    pca_df["CustomerID"] = clustered_customers["CustomerID"].values
-    pca_df["cluster"] = clustered_customers["cluster"].values
+    tsne_result = tsne.fit_transform(X_scaled)
 
-    explained_variance = pca.explained_variance_ratio_
+    tsne_df = pd.DataFrame(
+        tsne_result,
+        columns=["TSNE1", "TSNE2"]
+    )
 
-    return pca_df, explained_variance
-#----------------------------------------------------------------
+    tsne_df["CustomerID"] = clustered_customers["CustomerID"].values
+    tsne_df["cluster"] = clustered_customers["cluster"].values
+
+    return tsne_df
+
+
 def run_apriori(data, min_support=0.02, min_confidence=0.3):
-
-    basket = data.groupby(["InvoiceNo", "Description"])["Quantity"].sum().unstack().fillna(0)
+    basket = (
+        data.groupby(["InvoiceNo", "Description"])["Quantity"]
+        .sum()
+        .unstack()
+        .fillna(0)
+    )
 
     basket = (basket > 0).astype(int)
 
@@ -242,15 +278,20 @@ def run_apriori(data, min_support=0.02, min_confidence=0.3):
         "support",
         "confidence",
         "lift"
-    ]]
+    ]].copy()
 
-    rules["antecedents"] = rules["antecedents"].apply(lambda x: ", ".join(list(x)))
-    rules["consequents"] = rules["consequents"].apply(lambda x: ", ".join(list(x)))
+    rules["antecedents"] = rules["antecedents"].apply(
+        lambda x: ", ".join(sorted(list(x)))
+    )
+
+    rules["consequents"] = rules["consequents"].apply(
+        lambda x: ", ".join(sorted(list(x)))
+    )
 
     return rules
-#----------------------------------------------------------------
-def run_anomaly_detection(clustered_customers):
 
+
+def run_anomaly_detection(clustered_customers):
     feature_columns = [
         "TotalSpent",
         "TotalQuantity",
@@ -263,7 +304,6 @@ def run_anomaly_detection(clustered_customers):
     X = clustered_customers[feature_columns]
 
     scaler = StandardScaler()
-
     X_scaled = scaler.fit_transform(X)
 
     model = IsolationForest(
@@ -289,14 +329,9 @@ def run_anomaly_detection(clustered_customers):
     ]
 
     return anomaly_results, anomalies
-#----------------------------------------------------------------
-def generate_insights(
-    clustered_customers,
-    rules,
-    anomalies,
-    explained_variance
-):
 
+
+def generate_insights(clustered_customers, rules, anomalies):
     insights = []
 
     highest_spending_cluster = (
@@ -306,11 +341,10 @@ def generate_insights(
     )
 
     insights.append(
-        f"cluster {highest_spending_cluster} contains the highest-spending customers."
+        f"Cluster {highest_spending_cluster} contains the highest-spending customers."
     )
 
     if not rules.empty:
-
         top_rule = rules.iloc[0]
 
         insights.append(
@@ -318,20 +352,11 @@ def generate_insights(
             f"{top_rule['antecedents']} -> "
             f"{top_rule['consequents']}."
         )
-
     else:
-
-        insights.append(
-            "No strong association rules were found."
-        )
-
-    retained_variance = (
-        explained_variance[0] +
-        explained_variance[1]
-    ) * 100
+        insights.append("No strong association rules were found.")
 
     insights.append(
-        f"PCA retained {retained_variance:.1f}% of the original variance."
+        "t-SNE was used to visualize customer groups in 2D space."
     )
 
     insights.append(
@@ -339,14 +364,14 @@ def generate_insights(
     )
 
     return insights
-#----------------------------------------------------------------
+
+
 def run_full_analysis(
     file_source,
     fixed_k=None,
     min_support=0.02,
     min_confidence=0.3
 ):
-
     raw_data = load_data(file_source)
 
     clean_data = preprocess_data(raw_data)
@@ -355,18 +380,18 @@ def run_full_analysis(
 
     X_scaled, feature_columns = scale_features(customer_features)
 
-    sse_values = calculate_sse(
+    bic_scores = calculate_bic_scores(
         X_scaled,
         max_k=min(10, len(customer_features))
     )
 
-    clustered_customers, cluster_summary, best_k, silhouette = run_kmeans(
+    clustered_customers, cluster_summary, best_k, silhouette = run_gmm(
         customer_features,
         X_scaled,
         fixed_k=fixed_k
     )
 
-    pca_results, explained_variance = run_pca(
+    tsne_results = run_tsne(
         clustered_customers,
         X_scaled
     )
@@ -384,8 +409,7 @@ def run_full_analysis(
     insights = generate_insights(
         clustered_customers,
         association_rules_results,
-        anomalies,
-        explained_variance
+        anomalies
     )
 
     return {
@@ -393,16 +417,14 @@ def run_full_analysis(
         "clean_data": clean_data,
         "customer_features": customer_features,
         "feature_columns": feature_columns,
-        "sse_values": sse_values,
+        "bic_scores": bic_scores,
         "customers": clustered_customers,
         "cluster_summary": cluster_summary,
         "best_k": best_k,
         "silhouette_score": silhouette,
-        "pca": pca_results,
-        "explained_variance": explained_variance,
+        "tsne": tsne_results,
         "rules": association_rules_results,
         "anomaly_results": anomaly_results,
         "anomalies": anomalies,
         "insights": insights
     }
-#----------------------------------------------------------------

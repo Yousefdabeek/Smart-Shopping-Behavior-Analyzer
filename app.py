@@ -13,7 +13,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-
 .stApp {
     background-color: #0f172a;
     color: white;
@@ -68,7 +67,6 @@ div[data-testid="stMetricLabel"] {
     border-radius: 12px;
     overflow: hidden;
 }
-
 </style>
 """, unsafe_allow_html=True)
 
@@ -77,15 +75,8 @@ def sidebar_controls():
     st.sidebar.title("Smart Shopping Analyzer")
     st.sidebar.write("Upload a CSV file and run the analysis.")
 
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload CSV File",
-        type=["csv"]
-    )
-
-    run_button = st.sidebar.button(
-        "Run Analysis",
-        type="primary"
-    )
+    uploaded_file = st.sidebar.file_uploader("Upload CSV File", type=["csv"])
+    run_button = st.sidebar.button("Run Analysis", type="primary")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Optional Settings")
@@ -116,11 +107,7 @@ def sidebar_controls():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Instructions")
-    st.sidebar.markdown(
-        "1. Upload CSV\n"
-        "2. Click Run Analysis\n"
-        "3. Explore results"
-    )
+    st.sidebar.markdown("1. Upload CSV\n2. Click Run Analysis\n3. Explore results")
 
     return uploaded_file, run_button, cluster_k, min_support, min_confidence
 
@@ -135,27 +122,20 @@ def show_header():
 
     st.markdown("""
     <div class="hero-card">
-
     <h3>Discover hidden customer behavior patterns using unsupervised learning</h3>
-
     <p>This dashboard analyzes shopping transactions using:</p>
-
     <ul>
-        <li>K-Means clustering</li>
-        <li>PCA Dimensionality Reduction</li>
+        <li>Gaussian Mixture Model clustering</li>
+        <li>t-SNE visualization</li>
         <li>Association Rule Mining</li>
         <li>Anomaly Detection</li>
     </ul>
-
     </div>
     """, unsafe_allow_html=True)
 
 
 def show_overview(results):
-    st.markdown(
-        '<div class="section-title">Dataset Overview</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">Dataset Overview</div>', unsafe_allow_html=True)
 
     clean_data = results["clean_data"]
     raw_data = results["raw_data"]
@@ -168,16 +148,9 @@ def show_overview(results):
     col4.metric("Products", f"{clean_data['Description'].nunique():,}")
     col5.metric("Revenue", f"${clean_data['TotalPrice'].sum():,.0f}")
 
-    st.markdown(
-        '<div class="section-title">Data Preview</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">Data Preview</div>', unsafe_allow_html=True)
 
-    st.dataframe(
-        raw_data.head(12),
-        use_container_width=True,
-        height=320
-    )
+    st.dataframe(raw_data.head(12), use_container_width=True, height=320)
 
     left, right = st.columns([2, 1])
 
@@ -187,27 +160,17 @@ def show_overview(results):
 
     with right:
         st.markdown("### Missing Values")
-
         missing_values = raw_data.isna().sum().reset_index()
         missing_values.columns = ["Column", "MissingCount"]
-
-        st.dataframe(
-            missing_values,
-            use_container_width=True,
-            height=220
-        
-        )
+        st.dataframe(missing_values, use_container_width=True, height=220)
 
 
 def show_clustering(results):
-    st.markdown(
-        '<div class="section-title">clustering Results</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">GMM Clustering Results</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
 
-    col1.metric("Number of clusters", results["best_k"])
+    col1.metric("Number of Clusters", results["best_k"])
 
     if results["silhouette_score"] is not None:
         col2.metric("Silhouette Score", f"{results['silhouette_score']:.4f}")
@@ -231,7 +194,7 @@ def show_clustering(results):
         y="Customers",
         color="cluster",
         text="Customers",
-        title="cluster Distribution"
+        title="GMM Cluster Distribution"
     )
 
     fig.update_layout(
@@ -243,43 +206,30 @@ def show_clustering(results):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### cluster Summary")
+    st.markdown("### Cluster Summary")
 
-    st.dataframe(
-        results["cluster_summary"],
-        use_container_width=True,
-        height=280
-    )
+    st.dataframe(results["cluster_summary"], use_container_width=True, height=280)
 
     st.download_button(
-        "Download clustered Customers CSV",
+        "Download Clustered Customers CSV",
         data=results["customers"].to_csv(index=False),
         file_name="clustered_customers.csv",
         mime="text/csv"
     )
 
 
-def show_pca(results):
-    st.markdown(
-        '<div class="section-title">PCA Visualization</div>',
-        unsafe_allow_html=True
-    )
+def show_tsne(results):
+    st.markdown('<div class="section-title">t-SNE Visualization</div>', unsafe_allow_html=True)
 
-    pca_df = results["pca"]
-    explained_variance = results["explained_variance"]
-
-    retained_variance = (
-        explained_variance[0] +
-        explained_variance[1]
-    ) * 100
+    tsne_df = results["tsne"]
 
     fig = px.scatter(
-        pca_df,
-        x="PC1",
-        y="PC2",
-        color=pca_df["cluster"].astype(str),
+        tsne_df,
+        x="TSNE1",
+        y="TSNE2",
+        color=tsne_df["cluster"].astype(str),
         hover_data=["CustomerID"],
-        title=f"PCA Scatter Plot (Retained Variance: {retained_variance:.1f}%)",
+        title="t-SNE Customer Visualization",
         labels={"color": "cluster"}
     )
 
@@ -291,24 +241,18 @@ def show_pca(results):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.info(
-        f"Explained variance: PC1 = {explained_variance[0] * 100:.1f}% | "
-        f"PC2 = {explained_variance[1] * 100:.1f}%"
-    )
+    st.info("t-SNE reduces customer behavior features into 2D for visualization.")
 
     st.download_button(
-        "Download PCA Results CSV",
-        data=results["pca"].to_csv(index=False),
-        file_name="pca_results.csv",
+        "Download t-SNE Results CSV",
+        data=results["tsne"].to_csv(index=False),
+        file_name="tsne_results.csv",
         mime="text/csv"
     )
 
 
 def show_association_rules(results):
-    st.markdown(
-        '<div class="section-title">Association Rules</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">Association Rules</div>', unsafe_allow_html=True)
 
     rules = results["rules"]
 
@@ -334,10 +278,7 @@ def show_association_rules(results):
         unsafe_allow_html=True
     )
 
-    st.dataframe(
-        rules.head(20),
-        use_container_width=True
-    )
+    st.dataframe(rules.head(20), use_container_width=True)
 
     st.download_button(
         "Download Association Rules CSV",
@@ -348,10 +289,7 @@ def show_association_rules(results):
 
 
 def show_anomalies(results):
-    st.markdown(
-        '<div class="section-title">Anomaly Detection</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">Anomaly Detection</div>', unsafe_allow_html=True)
 
     anomalies = results["anomalies"]
 
@@ -366,13 +304,13 @@ def show_anomalies(results):
         return
 
     display_columns = [
-    "CustomerID",
-    "TotalSpent",
-    "NumTransactions",
-    "AvgTransactionValue",
-    "RecencyDays",
-    "AnomalyScore"
-]
+        "CustomerID",
+        "TotalSpent",
+        "NumTransactions",
+        "AvgTransactionValue",
+        "RecencyDays",
+        "AnomalyScore"
+    ]
 
     st.dataframe(
         anomalies[display_columns].sort_values("AnomalyScore"),
@@ -389,10 +327,7 @@ def show_anomalies(results):
 
 
 def show_insights(results):
-    st.markdown(
-        '<div class="section-title">Insights</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="section-title">Insights</div>', unsafe_allow_html=True)
 
     for insight in results["insights"]:
         st.markdown(f"- {insight}")
@@ -410,7 +345,6 @@ def main():
 
         try:
             fixed_k = int(cluster_k) if int(cluster_k) >= 2 else None
-
             uploaded_file.seek(0)
 
             with st.spinner("Running analysis, please wait..."):
@@ -440,8 +374,8 @@ def main():
 
     tabs = st.tabs([
         "Overview",
-        "clustering",
-        "PCA",
+        "GMM Clustering",
+        "t-SNE",
         "Association Rules",
         "Anomalies",
         "Insights"
@@ -454,7 +388,7 @@ def main():
         show_clustering(results)
 
     with tabs[2]:
-        show_pca(results)
+        show_tsne(results)
 
     with tabs[3]:
         show_association_rules(results)
