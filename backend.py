@@ -22,8 +22,7 @@ REQUIRED_COLUMNS = [
 
 
 def load_data(file_source):
-    df = pd.read_csv(file_source)
-    return df
+    return pd.read_csv(file_source)
 
 
 def preprocess_data(df):
@@ -44,7 +43,6 @@ def preprocess_data(df):
     data["InvoiceDate"] = pd.to_datetime(data["InvoiceDate"], errors="coerce")
 
     data = data.dropna(subset=["Quantity", "UnitPrice", "InvoiceDate"])
-
     data = data[data["Quantity"] > 0]
     data = data[data["UnitPrice"] > 0]
 
@@ -133,7 +131,6 @@ def choose_best_k(X_scaled, max_k=10):
         )
 
         labels = model.fit_predict(X_scaled)
-
         score = silhouette_score(X_scaled, labels)
 
         if score > best_score:
@@ -145,11 +142,11 @@ def choose_best_k(X_scaled, max_k=10):
 
 def run_gmm(customer_df, X_scaled, fixed_k=None):
     if len(customer_df) < 3:
-        clustered_customers = customer_df.copy()
-        clustered_customers["cluster"] = 0
-        clustered_customers["ClusterProbability"] = 1.0
+        grouped_customers = customer_df.copy()
+        grouped_customers["CustomerGroup"] = 0
+        grouped_customers["GroupConfidence"] = 1.0
 
-        cluster_summary = clustered_customers.groupby("cluster").agg({
+        group_summary = grouped_customers.groupby("CustomerGroup").agg({
             "CustomerID": "count",
             "TotalSpent": "mean",
             "TotalQuantity": "mean",
@@ -157,35 +154,35 @@ def run_gmm(customer_df, X_scaled, fixed_k=None):
             "UniqueProducts": "mean",
             "RecencyDays": "mean",
             "AvgTransactionValue": "mean",
-            "ClusterProbability": "mean"
+            "GroupConfidence": "mean"
         }).reset_index()
 
-        cluster_summary = cluster_summary.rename(columns={
+        group_summary = group_summary.rename(columns={
             "CustomerID": "NumberOfCustomers"
         })
 
-        return clustered_customers, cluster_summary, 1, None
+        return grouped_customers, group_summary, 1, None
 
     if fixed_k is not None and fixed_k >= 2:
         best_k = min(int(fixed_k), len(customer_df) - 1)
-        silhouette = None
+        group_quality = None
     else:
         max_k = min(10, len(customer_df) - 1)
-        best_k, silhouette = choose_best_k(X_scaled, max_k=max_k)
+        best_k, group_quality = choose_best_k(X_scaled, max_k=max_k)
 
     model = GaussianMixture(
         n_components=best_k,
         random_state=42
     )
 
-    cluster_labels = model.fit_predict(X_scaled)
-    cluster_probabilities = model.predict_proba(X_scaled).max(axis=1)
+    group_labels = model.fit_predict(X_scaled)
+    group_confidence = model.predict_proba(X_scaled).max(axis=1)
 
-    clustered_customers = customer_df.copy()
-    clustered_customers["cluster"] = cluster_labels
-    clustered_customers["ClusterProbability"] = cluster_probabilities
+    grouped_customers = customer_df.copy()
+    grouped_customers["CustomerGroup"] = group_labels
+    grouped_customers["GroupConfidence"] = group_confidence
 
-    cluster_summary = clustered_customers.groupby("cluster").agg({
+    group_summary = grouped_customers.groupby("CustomerGroup").agg({
         "CustomerID": "count",
         "TotalSpent": "mean",
         "TotalQuantity": "mean",
@@ -193,28 +190,28 @@ def run_gmm(customer_df, X_scaled, fixed_k=None):
         "UniqueProducts": "mean",
         "RecencyDays": "mean",
         "AvgTransactionValue": "mean",
-        "ClusterProbability": "mean"
+        "GroupConfidence": "mean"
     }).reset_index()
 
-    cluster_summary = cluster_summary.rename(columns={
+    group_summary = group_summary.rename(columns={
         "CustomerID": "NumberOfCustomers"
     })
 
-    return clustered_customers, cluster_summary, best_k, silhouette
+    return grouped_customers, group_summary, best_k, group_quality
 
 
-def run_tsne(clustered_customers, X_scaled):
-    n_samples = len(clustered_customers)
+def run_tsne(grouped_customers, X_scaled):
+    n_samples = len(grouped_customers)
 
     if n_samples < 3:
-        tsne_df = pd.DataFrame({
-            "TSNE1": [0] * n_samples,
-            "TSNE2": [0] * n_samples,
-            "CustomerID": clustered_customers["CustomerID"].values,
-            "cluster": clustered_customers["cluster"].values
+        customer_map = pd.DataFrame({
+            "MapX": [0] * n_samples,
+            "MapY": [0] * n_samples,
+            "CustomerID": grouped_customers["CustomerID"].values,
+            "CustomerGroup": grouped_customers["CustomerGroup"].values
         })
 
-        return tsne_df
+        return customer_map
 
     perplexity_value = min(30, max(2, (n_samples - 1) // 3))
 
@@ -228,15 +225,15 @@ def run_tsne(clustered_customers, X_scaled):
 
     tsne_result = tsne.fit_transform(X_scaled)
 
-    tsne_df = pd.DataFrame(
+    customer_map = pd.DataFrame(
         tsne_result,
-        columns=["TSNE1", "TSNE2"]
+        columns=["MapX", "MapY"]
     )
 
-    tsne_df["CustomerID"] = clustered_customers["CustomerID"].values
-    tsne_df["cluster"] = clustered_customers["cluster"].values
+    customer_map["CustomerID"] = grouped_customers["CustomerID"].values
+    customer_map["CustomerGroup"] = grouped_customers["CustomerGroup"].values
 
-    return tsne_df
+    return customer_map
 
 
 def run_apriori(data, min_support=0.02, min_confidence=0.3):
@@ -288,10 +285,18 @@ def run_apriori(data, min_support=0.02, min_confidence=0.3):
         lambda x: ", ".join(sorted(list(x)))
     )
 
+    rules = rules.rename(columns={
+        "antecedents": "ProductsBought",
+        "consequents": "AlsoBought",
+        "support": "Frequency",
+        "confidence": "Chance",
+        "lift": "RelationshipStrength"
+    })
+
     return rules
 
 
-def run_anomaly_detection(clustered_customers):
+def run_anomaly_detection(grouped_customers):
     feature_columns = [
         "TotalSpent",
         "TotalQuantity",
@@ -301,7 +306,7 @@ def run_anomaly_detection(clustered_customers):
         "AvgTransactionValue"
     ]
 
-    X = clustered_customers[feature_columns]
+    X = grouped_customers[feature_columns]
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -313,54 +318,54 @@ def run_anomaly_detection(clustered_customers):
 
     labels = model.fit_predict(X_scaled)
 
-    anomaly_results = clustered_customers.copy()
+    anomaly_results = grouped_customers.copy()
 
-    anomaly_results["Anomaly"] = labels
+    anomaly_results["UnusualFlag"] = labels
 
-    anomaly_results["AnomalyLabel"] = anomaly_results["Anomaly"].map({
+    anomaly_results["CustomerStatus"] = anomaly_results["UnusualFlag"].map({
         1: "Normal",
-        -1: "Anomaly"
+        -1: "Unusual"
     })
 
-    anomaly_results["AnomalyScore"] = model.decision_function(X_scaled)
+    anomaly_results["UnusualScore"] = model.decision_function(X_scaled)
 
-    anomalies = anomaly_results[
-        anomaly_results["AnomalyLabel"] == "Anomaly"
+    unusual_customers = anomaly_results[
+        anomaly_results["CustomerStatus"] == "Unusual"
     ]
 
-    return anomaly_results, anomalies
+    return anomaly_results, unusual_customers
 
 
-def generate_insights(clustered_customers, rules, anomalies):
+def generate_insights(grouped_customers, rules, unusual_customers):
     insights = []
 
-    highest_spending_cluster = (
-        clustered_customers.groupby("cluster")["TotalSpent"]
+    highest_spending_group = (
+        grouped_customers.groupby("CustomerGroup")["TotalSpent"]
         .mean()
         .idxmax()
     )
 
     insights.append(
-        f"Cluster {highest_spending_cluster} contains the highest-spending customers."
+        f"Customer Group {highest_spending_group} has the highest average spending."
     )
 
     if not rules.empty:
         top_rule = rules.iloc[0]
 
         insights.append(
-            f"The strongest product rule is "
-            f"{top_rule['antecedents']} -> "
-            f"{top_rule['consequents']}."
+            f"Customers who buy {top_rule['ProductsBought']} often also buy {top_rule['AlsoBought']}."
         )
     else:
-        insights.append("No strong association rules were found.")
+        insights.append(
+            "No strong product-pair pattern was found with the current settings."
+        )
 
     insights.append(
-        "t-SNE was used to visualize customer groups in 2D space."
+        "The customer map shows which customers have similar shopping behavior."
     )
 
     insights.append(
-        f"{len(anomalies)} anomalous customers were detected."
+        f"{len(unusual_customers)} unusual customers were detected."
     )
 
     return insights
@@ -385,31 +390,31 @@ def run_full_analysis(
         max_k=min(10, len(customer_features))
     )
 
-    clustered_customers, cluster_summary, best_k, silhouette = run_gmm(
+    grouped_customers, group_summary, best_k, group_quality = run_gmm(
         customer_features,
         X_scaled,
         fixed_k=fixed_k
     )
 
-    tsne_results = run_tsne(
-        clustered_customers,
+    customer_map = run_tsne(
+        grouped_customers,
         X_scaled
     )
 
-    association_rules_results = run_apriori(
+    product_rules = run_apriori(
         clean_data,
         min_support=min_support,
         min_confidence=min_confidence
     )
 
-    anomaly_results, anomalies = run_anomaly_detection(
-        clustered_customers
+    anomaly_results, unusual_customers = run_anomaly_detection(
+        grouped_customers
     )
 
     insights = generate_insights(
-        clustered_customers,
-        association_rules_results,
-        anomalies
+        grouped_customers,
+        product_rules,
+        unusual_customers
     )
 
     return {
@@ -418,13 +423,13 @@ def run_full_analysis(
         "customer_features": customer_features,
         "feature_columns": feature_columns,
         "bic_scores": bic_scores,
-        "customers": clustered_customers,
-        "cluster_summary": cluster_summary,
+        "customers": grouped_customers,
+        "group_summary": group_summary,
         "best_k": best_k,
-        "silhouette_score": silhouette,
-        "tsne": tsne_results,
-        "rules": association_rules_results,
+        "group_quality_score": group_quality,
+        "customer_map": customer_map,
+        "product_rules": product_rules,
         "anomaly_results": anomaly_results,
-        "anomalies": anomalies,
-        "insights": insights
+        "unusual_customers": unusual_customers,
+        "business_insights": insights
     }
